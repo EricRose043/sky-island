@@ -21,8 +21,8 @@ let actionTime = 0; // 放方塊、攻擊時揮一下手
 
 // ---------- 場景 ----------
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x9cc9ff);
-scene.fog = new THREE.Fog(0x9cc9ff, 30, 60);
+scene.background = new THREE.Color(0xbfe0f4); // 素材包建議的天空色
+scene.fog = new THREE.Fog(0xbfe0f4, 30, 60);
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "low-power" });
 renderer.setPixelRatio(1); // 舊電腦也要 30 fps，不跟著高解析度螢幕放大
@@ -34,44 +34,26 @@ const sun = new THREE.DirectionalLight(0xffffff, 0.8);
 sun.position.set(8, 20, 5);
 scene.add(sun);
 
-// ---------- 像素材質（16×16，用程式畫，之後可換成素材包的圖） ----------
-function pixelTexture(draw) {
-  const c = document.createElement("canvas");
-  c.width = c.height = 16;
-  const g = c.getContext("2d");
-  let seed = 7;
-  const rand = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
-  draw(g, rand);
-  const t = new THREE.CanvasTexture(c);
+// ---------- 材質：老師的素材包（assets/textures，16×16） ----------
+const loader = new THREE.TextureLoader();
+function pixelTexture(name) {
+  const t = loader.load(`assets/textures/${name}.png`);
+  // 像素圖保持銳利
   t.magFilter = THREE.NearestFilter;
   t.minFilter = THREE.NearestFilter;
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
-function noise(g, rand, base, spread) {
-  for (let y = 0; y < 16; y++) {
-    for (let x = 0; x < 16; x++) {
-      const k = 1 + (rand() - 0.5) * spread;
-      g.fillStyle = `rgb(${base.map((v) => Math.min(255, v * k) | 0).join(",")})`;
-      g.fillRect(x, y, 1, 1);
-    }
-  }
-  g.strokeStyle = "rgba(0,0,0,0.25)";
-  g.strokeRect(0.5, 0.5, 15, 15);
-}
 const tex = {
-  grassTop: pixelTexture((g, r) => noise(g, r, [95, 160, 60], 0.3)),
-  dirt: pixelTexture((g, r) => noise(g, r, [134, 90, 52], 0.3)),
-  grassSide: pixelTexture((g, r) => {
-    noise(g, r, [134, 90, 52], 0.3);
-    g.fillStyle = "rgb(95,160,60)";
-    for (let x = 0; x < 16; x++) g.fillRect(x, 0, 1, 3 + ((r() * 2) | 0));
-  }),
-  stone: pixelTexture((g, r) => noise(g, r, [128, 128, 128], 0.35)),
+  grassTop: pixelTexture("grass_top"),
+  grassSide: pixelTexture("grass_side"),
+  dirt: pixelTexture("dirt"),
+  stone: pixelTexture("stone"),
 };
 const lam = (map) => new THREE.MeshLambertMaterial({ map });
 const MATERIALS = {
   // 順序：+x, -x, +y(上), -y(下), +z, -z
+  // 泥土方塊照素材包的 Grass：上面 grass_top、側面 grass_side、底面 dirt
   dirt: [lam(tex.grassSide), lam(tex.grassSide), lam(tex.grassTop), lam(tex.dirt), lam(tex.grassSide), lam(tex.grassSide)],
   stone: lam(tex.stone),
 };
@@ -107,24 +89,11 @@ const highlight = new THREE.LineSegments(
 highlight.visible = false;
 scene.add(highlight);
 
-const crackTex = pixelTexture((g, r) => {
-  g.strokeStyle = "rgba(0,0,0,0.9)";
-  g.lineWidth = 1;
-  for (let i = 0; i < 6; i++) {
-    g.beginPath();
-    let x = 8, y = 8;
-    g.moveTo(x, y);
-    for (let s = 0; s < 4; s++) {
-      x += (r() - 0.5) * 8;
-      y += (r() - 0.5) * 8;
-      g.lineTo(x, y);
-    }
-    g.stroke();
-  }
-});
+// 裂痕：destroy_stage_0（剛開始挖）～ destroy_stage_9（快挖掉了）
+const crackTex = Array.from({ length: 10 }, (_, i) => pixelTexture(`destroy_stage_${i}`));
 const crack = new THREE.Mesh(
   new THREE.BoxGeometry(1.01, 1.01, 1.01),
-  new THREE.MeshBasicMaterial({ map: crackTex, transparent: true, opacity: 0, depthWrite: false }),
+  new THREE.MeshBasicMaterial({ map: crackTex[0], transparent: true, depthWrite: false }),
 );
 crack.visible = false;
 scene.add(crack);
@@ -398,7 +367,8 @@ function step(dt) {
     const { x, y, z, type, progress } = world.digging;
     crack.visible = true;
     crack.position.set(x + 0.5, y + 0.5, z + 0.5);
-    crack.material.opacity = Math.min(1, progress / DIG_TIME[type]);
+    const stage = Math.min(9, Math.floor((progress / DIG_TIME[type]) * 10));
+    crack.material.map = crackTex[stage];
   } else {
     crack.visible = false;
   }
