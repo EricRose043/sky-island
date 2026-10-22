@@ -6,6 +6,7 @@ export const MONSTER_HP = 3;
 export const SPAWN_MIN = 10;
 export const SPAWN_MAX = 20;
 export const MONSTER_SPEED = 1; // 每秒幾格
+export const REACH = 3.5; // 挖、放最遠幾格
 
 const key = (x, y, z) => `${x},${y},${z}`;
 
@@ -184,6 +185,16 @@ export class World {
     }
     return true;
   }
+}
+
+// 手搆得到嗎：從角色胸口（腳 +1 格）到方塊中心，距離在 REACH 以內
+export function inReach(feet, cell) {
+  const d = Math.hypot(
+    cell.x + 0.5 - feet.x,
+    cell.y + 0.5 - (feet.y + 1),
+    cell.z + 0.5 - feet.z,
+  );
+  return d <= REACH;
 }
 
 // 玩家移動：限制在世界範圍內

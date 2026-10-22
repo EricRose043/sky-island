@@ -1,9 +1,8 @@
 // 畫面層：three.js 畫出 World 的狀態，並把鍵盤與滑鼠轉成遊戲動作
 import * as THREE from "three";
-import { World, movePlayer, DIG_TIME, MONSTER_HP, SIZE } from "./world.js";
+import { World, movePlayer, inReach, DIG_TIME, MONSTER_HP, SIZE } from "./world.js";
 
 const ATTACK_RANGE = 3;
-const REACH = 6; // 挖、放的最遠距離
 const GRAVITY = 20;
 const JUMP_SPEED = 7;
 const WALK_SPEED = 4;
@@ -15,6 +14,10 @@ const pointer = { x: innerWidth / 2, y: innerHeight / 2, down: false };
 let selected = "dirt";
 let camYaw = 0;
 let hitFlash = 0;
+let facing = Math.PI; // 角色面向的方向（一開始背對鏡頭）
+let walkPhase = 0;
+let moving = false;
+let actionTime = 0; // 放方塊、攻擊時揮一下手
 
 // ---------- 場景 ----------
 const scene = new THREE.Scene();
@@ -127,13 +130,58 @@ crack.visible = false;
 scene.add(crack);
 
 // ---------- 玩家 ----------
+// 角色面向 +z；手腳用「關節」群組，轉關節就能擺動
+const skin = new THREE.MeshLambertMaterial({ color: 0xf2c79b });
+const shirt = new THREE.MeshLambertMaterial({ color: 0x3a7bd5 });
+const pants = new THREE.MeshLambertMaterial({ color: 0x2b2d42 });
 const playerMesh = new THREE.Group();
-const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.2, 0.4), new THREE.MeshLambertMaterial({ color: 0x3a7bd5 }));
-body.position.y = 0.6;
-const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), new THREE.MeshLambertMaterial({ color: 0xf2c79b }));
-head.position.y = 1.45;
-playerMesh.add(body, head);
+function limb(w, h, mat, x, y) {
+  const joint = new THREE.Group();
+  joint.position.set(x, y, 0);
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat);
+  m.position.y = -h / 2;
+  joint.add(m);
+  playerMesh.add(joint);
+  return joint;
+}
+const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.65, 0.28), shirt);
+torso.position.y = 1.025;
+const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.42), skin);
+head.position.y = 1.56;
+const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.02), pants);
+const eyeR = eyeL.clone();
+eyeL.position.set(-0.1, 1.6, 0.22);
+eyeR.position.set(0.1, 1.6, 0.22);
+playerMesh.add(torso, head, eyeL, eyeR);
+const armL = limb(0.16, 0.6, skin, -0.33, 1.32);
+const armR = limb(0.16, 0.6, skin, 0.33, 1.32);
+const legL = limb(0.2, 0.7, pants, -0.12, 0.7);
+const legR = limb(0.2, 0.7, pants, 0.12, 0.7);
 scene.add(playerMesh);
+
+function animatePlayer(dt, time, target) {
+  // 轉向：走路時看前進方向；站著時看滑鼠瞄準的方塊
+  let want = facing;
+  if (moving) want = moveYaw;
+  else if (target) want = Math.atan2(target.hit.x + 0.5 - player.x, target.hit.z + 0.5 - player.z);
+  let diff = ((want - facing + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  facing += diff * Math.min(1, dt * 12);
+  playerMesh.rotation.y = facing;
+
+  // 走路擺手擺腳
+  walkPhase = moving ? walkPhase + dt * 10 : walkPhase * 0.8;
+  const swing = Math.sin(walkPhase) * 0.7;
+  legL.rotation.x = swing;
+  legR.rotation.x = -swing;
+  armL.rotation.x = -swing;
+
+  // 右手：挖的時候一直揮，放方塊、攻擊時揮一下
+  actionTime = Math.max(0, actionTime - dt);
+  if (world.digging) armR.rotation.x = -1.2 - Math.abs(Math.sin(time * 14)) * 0.9;
+  else if (actionTime > 0) armR.rotation.x = -2 * Math.sin((actionTime / 0.25) * Math.PI);
+  else armR.rotation.x = swing;
+}
+let moveYaw = facing;
 
 // ---------- 掉落物與怪獸 ----------
 const dropMeshes = new Map();
@@ -206,8 +254,8 @@ function pickCell() {
   if (!hit) return null;
   const [x, y, z] = hit.object.userData.cells[hit.instanceId];
   const n = hit.face.normal;
-  const dist = Math.hypot(x + 0.5 - player.x, y + 0.5 - (player.y + 1), z + 0.5 - player.z);
-  if (dist > REACH) return null;
+  // 太遠的方塊挖不到，要走過去
+  if (!inReach(player, { x, y, z })) return null;
   return {
     hit: { x, y, z },
     adjacent: { x: x + Math.round(n.x), y: y + Math.round(n.y), z: z + Math.round(n.z) },
@@ -247,6 +295,7 @@ canvas.addEventListener("pointerdown", (e) => {
     if (world.monsterAlive() && nearestMonsterDist() <= ATTACK_RANGE) {
       world.attackMonster({ x: player.x - 0.5, z: player.z - 0.5 });
       hitFlash = 0.15;
+      actionTime = 0.25;
       return;
     }
     pointer.down = true;
@@ -259,7 +308,7 @@ canvas.addEventListener("pointerdown", (e) => {
     const py = Math.floor(player.y + 0.01);
     // 不能把方塊放在自己身上
     if (x === px && z === pz && (y === py || y === py + 1)) return;
-    world.placeBlock(x, y, z, selected);
+    if (world.placeBlock(x, y, z, selected)) actionTime = 0.25;
   }
 });
 addEventListener("pointerup", () => {
@@ -286,10 +335,12 @@ function step(dt) {
   if (keys.has("KeyS")) f -= 1;
   if (keys.has("KeyD")) s += 1;
   if (keys.has("KeyA")) s -= 1;
-  if (f || s) {
+  moving = !!(f || s);
+  if (moving) {
     const len = Math.hypot(f, s);
     const dx = ((-Math.sin(camYaw) * f + Math.cos(camYaw) * s) / len) * WALK_SPEED * dt;
     const dz = ((-Math.cos(camYaw) * f - Math.sin(camYaw) * s) / len) * WALK_SPEED * dt;
+    moveYaw = Math.atan2(dx, dz);
     // 分開試 x、z，撞牆時還能沿著牆走
     const nx = movePlayer(player, dx, 0, 1);
     if (world.canWalkTo(nx.x, player.y, player.z)) player.x = nx.x;
@@ -336,6 +387,8 @@ function step(dt) {
   world.pickupNear(player.x - 0.5, player.y + 0.5, player.z - 0.5);
   hitFlash = Math.max(0, hitFlash - dt);
 
+  animatePlayer(dt, performance.now() / 1000, target);
+
   // 瞄準框
   highlight.visible = !!target;
   if (target) highlight.position.set(target.hit.x + 0.5, target.hit.y + 0.5, target.hit.z + 0.5);
@@ -370,7 +423,6 @@ function frame(now) {
   syncMonsters(time);
 
   playerMesh.position.set(player.x, player.y, player.z);
-  playerMesh.rotation.y = camYaw;
   const camDist = 8;
   camera.position.set(
     player.x + Math.sin(camYaw) * camDist,

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { World, movePlayer, SIZE, MONSTER_HP, SPAWN_MAX } from "../src/world.js";
+import { World, movePlayer, inReach, SIZE, MONSTER_HP, SPAWN_MAX } from "../src/world.js";
 
 const center = { x: 16, y: 11, z: 16 };
 
@@ -63,6 +63,18 @@ test("STEP 1: 石頭比泥土久，大約 2 秒", () => {
   assert.equal(w.getBlock(16, 9, 16), "stone");
   w.update(0.6);
   assert.equal(w.getBlock(16, 9, 16), null);
+});
+
+test("STEP 1: 角色身邊的方塊挖得到", () => {
+  const feet = { x: 16.5, y: 11, z: 16.5 };
+  assert.equal(inReach(feet, { x: 16, y: 10, z: 16 }), true); // 腳下
+  assert.equal(inReach(feet, { x: 19, y: 10, z: 16 }), true); // 3 格外
+});
+
+test("STEP 1: 離角色太遠的方塊挖不到、也放不了", () => {
+  const feet = { x: 16.5, y: 11, z: 16.5 };
+  assert.equal(inReach(feet, { x: 21, y: 10, z: 16 }), false); // 5 格外
+  assert.equal(inReach(feet, { x: 10, y: 10, z: 10 }), false);
 });
 
 test("STEP 1: 挖到一半放開，進度不保留", () => {
