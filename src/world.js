@@ -1,6 +1,16 @@
 // 空中之島的遊戲邏輯（不含畫面，方便用測試驗證）
 export const SIZE = 32;
-export const DIG_TIME = { dirt: 1, stone: 2 };
+// 每種方塊要挖幾秒；順序也是方塊欄 1～7 的順序
+export const DIG_TIME = {
+  dirt: 1,
+  stone: 2,
+  log: 1.5,
+  planks: 1.2,
+  sand: 0.7,
+  brick: 2.5,
+  leaves: 0.4,
+};
+export const BLOCK_TYPES = Object.keys(DIG_TIME);
 export const PICK_RANGE = 1.5;
 export const MONSTER_HP = 3;
 export const SPAWN_MIN = 10;
@@ -21,22 +31,44 @@ export class World {
     this.blocks = new Map();
     this.drops = [];
     this.monsters = [];
-    this.inventory = { dirt: 0, stone: 0 };
+    this.inventory = Object.fromEntries(BLOCK_TYPES.map((t) => [t, 0]));
     this.digging = null; // { x, y, z, type, progress }
     this.version = 0; // 方塊每變動一次 +1，畫面靠它決定要不要重畫
     this.nextSpawn = this.randomSpawnDelay();
     this.buildIsland();
   }
 
-  // 一座小島：中央圓形，上層是泥土，下層是石頭
+  // 一座小島：中央圓形，上層是泥土（南邊是沙灘），下層是石頭；
+  // 島上有兩棵樹和一段磚塊加木板的舊牆
   buildIsland() {
     const c = SIZE / 2;
     for (let x = 0; x < SIZE; x++) {
       for (let z = 0; z < SIZE; z++) {
         const d = Math.hypot(x - c, z - c);
         if (d > 7) continue;
-        this.blocks.set(key(x, 10, z), "dirt");
+        this.blocks.set(key(x, 10, z), d > 5 && z > c + 2 ? "sand" : "dirt");
         this.blocks.set(key(x, 9, z), "stone");
+      }
+    }
+    this.buildTree(12, 12);
+    this.buildTree(11, 19);
+    for (let x = 19; x <= 21; x++) {
+      this.blocks.set(key(x, 11, 12), "brick");
+      this.blocks.set(key(x, 12, 12), "planks");
+    }
+  }
+
+  // 樹：4 格高的樹幹，上面兩層 5×5 樹葉、最上面一層 3×3（去掉角落）
+  buildTree(tx, tz) {
+    for (let y = 11; y <= 14; y++) this.blocks.set(key(tx, y, tz), "log");
+    for (let y = 13; y <= 15; y++) {
+      const r = y === 15 ? 1 : 2;
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dz = -r; dz <= r; dz++) {
+          if (Math.abs(dx) === r && Math.abs(dz) === r) continue;
+          const k = key(tx + dx, y, tz + dz);
+          if (!this.blocks.has(k)) this.blocks.set(k, "leaves");
+        }
       }
     }
   }

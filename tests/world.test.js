@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { World, movePlayer, inReach, SIZE, MONSTER_HP, SPAWN_MAX } from "../src/world.js";
+import { World, movePlayer, inReach, SIZE, MONSTER_HP, SPAWN_MAX, DIG_TIME } from "../src/world.js";
 
 const center = { x: 16, y: 11, z: 16 };
 
@@ -39,6 +39,44 @@ test("STEP 0: 站的高度是腳下最高的方塊上面", () => {
   w.inventory.dirt = 1;
   w.placeBlock(16, 11, 16, "dirt");
   assert.equal(w.groundHeight(16.5, 16.5, 12), 12);
+});
+
+test("STEP 0: 島上有樹（木頭、樹葉）、沙灘、舊牆（磚塊、木板）", () => {
+  const w = new World();
+  const types = new Set(w.blocks.values());
+  for (const t of ["dirt", "stone", "log", "leaves", "sand", "brick", "planks"]) {
+    assert.ok(types.has(t), `島上應該有 ${t}`);
+  }
+});
+
+test("STEP 0: 新方塊都在 32 × 32 × 32 以內", () => {
+  const w = new World();
+  for (const k of w.blocks.keys()) {
+    const [x, y, z] = k.split(",").map(Number);
+    assert.ok([x, y, z].every((v) => v >= 0 && v < SIZE), k);
+  }
+});
+
+// 每一種新方塊都要能挖 → 掉 → 撿 → 放
+for (const type of ["log", "leaves", "sand", "brick", "planks"]) {
+  test(`STEP 1–4: ${type} 挖得掉、掉出同種類、撿得起來、放得回去`, () => {
+    const w = new World();
+    const k = [...w.blocks].find(([, t]) => t === type)[0];
+    const [x, y, z] = k.split(",").map(Number);
+    assert.equal(w.startDig(x, y, z), true);
+    w.update(DIG_TIME[type] + 0.05);
+    assert.equal(w.getBlock(x, y, z), null);
+    assert.equal(w.drops[0].type, type);
+    w.pickupNear(w.drops[0].x, w.drops[0].y, w.drops[0].z);
+    assert.equal(w.inventory[type], 1);
+    assert.equal(w.placeBlock(x, y, z, type), true);
+    assert.equal(w.inventory[type], 0);
+  });
+}
+
+test("STEP 1: 樹葉最好挖，磚塊比石頭還難挖", () => {
+  assert.ok(DIG_TIME.leaves < DIG_TIME.dirt);
+  assert.ok(DIG_TIME.brick > DIG_TIME.stone);
 });
 
 // STEP 1　挖方塊

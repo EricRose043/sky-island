@@ -1,6 +1,6 @@
 // 畫面層：three.js 畫出 World 的狀態，並把鍵盤與滑鼠轉成遊戲動作
 import * as THREE from "three";
-import { World, movePlayer, inReach, DIG_TIME, MONSTER_HP, SIZE } from "./world.js";
+import { World, movePlayer, inReach, DIG_TIME, BLOCK_TYPES, MONSTER_HP, SIZE } from "./world.js";
 
 const ATTACK_RANGE = 3;
 const GRAVITY = 20;
@@ -44,19 +44,22 @@ function pixelTexture(name) {
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
-const tex = {
-  grassTop: pixelTexture("grass_top"),
-  grassSide: pixelTexture("grass_side"),
-  dirt: pixelTexture("dirt"),
-  stone: pixelTexture("stone"),
-};
-const lam = (map) => new THREE.MeshLambertMaterial({ map });
+const lam = (name) => new THREE.MeshLambertMaterial({ map: pixelTexture(name) });
+// 六個面的順序：+x, -x, +y(上), -y(下), +z, -z
+const sides = (side, top, bottom = top) => [side, side, top, bottom, side, side];
 const MATERIALS = {
-  // 順序：+x, -x, +y(上), -y(下), +z, -z
   // 泥土方塊照素材包的 Grass：上面 grass_top、側面 grass_side、底面 dirt
-  dirt: [lam(tex.grassSide), lam(tex.grassSide), lam(tex.grassTop), lam(tex.dirt), lam(tex.grassSide), lam(tex.grassSide)],
-  stone: lam(tex.stone),
+  dirt: sides(lam("grass_side"), lam("grass_top"), lam("dirt")),
+  stone: lam("stone"),
+  // Log：上下兩面 log_top，側面 log_side
+  log: sides(lam("log_side"), lam("log_top")),
+  planks: lam("planks"),
+  sand: lam("sand"),
+  brick: lam("brick"),
+  leaves: new THREE.MeshLambertMaterial({ map: pixelTexture("leaves"), alphaTest: 0.5 }),
 };
+const NAMES = { dirt: "泥土", stone: "石頭", log: "木頭", planks: "木板", sand: "沙子", brick: "磚塊", leaves: "樹葉" };
+const ICONS = { dirt: "grass", stone: "stone", log: "log", planks: "planks", sand: "sand", brick: "brick", leaves: "leaves" };
 
 // ---------- 方塊：每種材質一個 InstancedMesh，只在世界變動時重建 ----------
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -67,7 +70,7 @@ let drawnVersion = -1;
 function rebuildBlocks() {
   for (const child of blockGroup.children) child.dispose();
   blockGroup.clear();
-  const byType = { dirt: [], stone: [] };
+  const byType = Object.fromEntries(BLOCK_TYPES.map((t) => [t, []]));
   for (const [k, type] of world.blocks) byType[type].push(k.split(",").map(Number));
   const m = new THREE.Matrix4();
   for (const type of Object.keys(byType)) {
@@ -241,8 +244,8 @@ function nearestMonsterDist() {
 addEventListener("keydown", (e) => {
   keys.add(e.code);
   if (e.code === "Space") e.preventDefault();
-  if (e.code === "Digit1") selected = "dirt";
-  if (e.code === "Digit2") selected = "stone";
+  const n = Number(e.code.replace("Digit", ""));
+  if (n >= 1 && n <= BLOCK_TYPES.length) selected = BLOCK_TYPES[n - 1];
 });
 addEventListener("keyup", (e) => keys.delete(e.code));
 addEventListener("blur", () => {
@@ -375,7 +378,16 @@ function step(dt) {
 }
 
 const hud = document.getElementById("hud");
-const slots = document.querySelectorAll("[data-slot]");
+// 方塊欄：照 BLOCK_TYPES 順序產生 1～7 格，點一下也能選
+const bar = document.getElementById("bar");
+for (const [i, type] of BLOCK_TYPES.entries()) {
+  const el = document.createElement("div");
+  el.dataset.slot = type;
+  el.innerHTML = `<img src="assets/icons/${ICONS[type]}.png" alt="" />${i + 1} ${NAMES[type]}<b>0</b>`;
+  el.addEventListener("pointerdown", () => (selected = type));
+  bar.appendChild(el);
+}
+const slots = bar.querySelectorAll("[data-slot]");
 const banner = document.getElementById("banner");
 let last = performance.now();
 let fpsTime = 0;
