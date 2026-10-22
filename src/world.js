@@ -5,6 +5,7 @@ export const PICK_RANGE = 1.5;
 export const MONSTER_HP = 3;
 export const SPAWN_MIN = 10;
 export const SPAWN_MAX = 20;
+export const MONSTER_SPEED = 1; // 每秒幾格
 
 const key = (x, y, z) => `${x},${y},${z}`;
 
@@ -21,6 +22,7 @@ export class World {
     this.monsters = [];
     this.inventory = { dirt: 0, stone: 0 };
     this.digging = null; // { x, y, z, type, progress }
+    this.version = 0; // 方塊每變動一次 +1，畫面靠它決定要不要重畫
     this.nextSpawn = this.randomSpawnDelay();
     this.buildIsland();
   }
@@ -40,6 +42,26 @@ export class World {
 
   getBlock(x, y, z) {
     return this.blocks.get(key(x, y, z)) ?? null;
+  }
+
+  // 腳下（feetY 以下）最高的方塊頂面；沒有地面回傳 null
+  groundHeight(px, pz, feetY) {
+    const x = Math.floor(px);
+    const z = Math.floor(pz);
+    for (let y = Math.min(SIZE - 1, Math.floor(feetY + 0.01) - 1); y >= 0; y--) {
+      if (this.getBlock(x, y, z)) return y + 1;
+    }
+    return null;
+  }
+
+  // 能不能走到這裡：要有地面，而且身體（兩格高）不能卡在方塊裡
+  canWalkTo(px, feetY, pz) {
+    const x = Math.floor(px);
+    const z = Math.floor(pz);
+    const y = Math.floor(feetY + 0.01);
+    if (!inBounds(x, Math.max(0, y), z)) return false;
+    if (this.getBlock(x, y, z) || this.getBlock(x, y + 1, z)) return false;
+    return this.groundHeight(px, pz, feetY) !== null;
   }
 
   monsterAlive() {
@@ -69,10 +91,26 @@ export class World {
         this.blocks.delete(key(x, y, z));
         this.drops.push({ type, x, y: y + 0.5, z });
         this.digging = null;
+        this.version++;
       }
     }
 
-    this.nextSpawn -= seconds;
+    // 怪獸慢慢走向玩家，靠近到 1.5 格就停
+    if (playerPos) {
+      for (const m of this.monsters) {
+        const dx = playerPos.x - m.x;
+        const dz = playerPos.z - m.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 1.5) {
+          const s = Math.min(d - 1.5, MONSTER_SPEED * seconds);
+          m.x += (dx / d) * s;
+          m.z += (dz / d) * s;
+        }
+      }
+    }
+
+    // 一次只來一隻：打敗之後才開始倒數下一隻
+    if (!this.monsterAlive()) this.nextSpawn -= seconds;
     if (this.nextSpawn <= 0 && playerPos) {
       this.spawnMonster(playerPos);
       this.nextSpawn = this.randomSpawnDelay();
@@ -102,6 +140,7 @@ export class World {
     if (this.getBlock(x, y, z)) return false;
     this.blocks.set(key(x, y, z), type);
     this.inventory[type] -= 1;
+    this.version++;
     return true;
   }
 

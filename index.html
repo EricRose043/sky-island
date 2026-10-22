@@ -5,27 +5,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>空中之島</title>
   <style>
-    :root { color-scheme: light dark; }
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #9cc9ff; font-family: system-ui, sans-serif; }
-    #hud {
-      position: fixed; top: 12px; left: 12px; padding: 8px 12px;
-      background: rgba(0, 0, 0, 0.5); color: #fff; border-radius: 8px; font-size: 16px;
-      pointer-events: none;
-    }
-    #help {
-      position: fixed; bottom: 12px; left: 12px; right: 12px; text-align: center;
-      background: rgba(0, 0, 0, 0.45); color: #fff; border-radius: 8px; padding: 6px 10px; font-size: 14px;
-      pointer-events: none;
-    }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #9cc9ff; font-family: system-ui, sans-serif; user-select: none; }
     canvas { display: block; }
+    .panel { position: fixed; background: rgba(0, 0, 0, 0.5); color: #fff; border-radius: 8px; pointer-events: none; }
+    #hud { top: 12px; left: 12px; padding: 6px 10px; font-size: 14px; }
+    #banner {
+      top: 12px; left: 50%; transform: translateX(-50%); padding: 8px 14px;
+      background: rgba(170, 20, 60, 0.85); font-size: 16px; font-weight: 600; white-space: nowrap;
+    }
+    #bar { bottom: 44px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; padding: 6px; }
+    #bar div { width: 64px; padding: 6px 0; text-align: center; border: 2px solid transparent; border-radius: 6px; font-size: 13px; }
+    #bar div.on { border-color: #fff; background: rgba(255, 255, 255, 0.15); }
+    #bar b { display: block; font-size: 18px; }
+    #help { bottom: 8px; left: 8px; right: 8px; text-align: center; padding: 6px 10px; font-size: 13px; }
   </style>
   <script type="importmap">
     { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
   </script>
 </head>
 <body>
-  <div id="hud"></div>
-  <div id="help">WASD 走 ・ 空白鍵跳 ・ 左鍵按住挖 ・ 右鍵放泥土 ・ 怪獸靠近時左鍵攻擊</div>
+  <div id="hud" class="panel"></div>
+  <div id="banner" class="panel" hidden></div>
+  <div id="bar" class="panel">
+    <div data-slot="dirt">1 泥土<b>0</b></div>
+    <div data-slot="stone">2 石頭<b>0</b></div>
+  </div>
+  <div id="help" class="panel">WASD 走 ・ 空白鍵跳 ・ Q/E 轉鏡頭 ・ 左鍵按住挖 ・ 右鍵放 ・ 1/2 換方塊 ・ 怪獸靠近時左鍵攻擊</div>
   <script type="module" src="src/main.js"></script>
 </body>
 </html>

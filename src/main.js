@@ -1,202 +1,408 @@
 // 畫面層：three.js 畫出 World 的狀態，並把鍵盤與滑鼠轉成遊戲動作
 import * as THREE from "three";
-import { World, movePlayer, DIG_TIME } from "./world.js";
+import { World, movePlayer, DIG_TIME, MONSTER_HP, SIZE } from "./world.js";
 
-const COLORS = { dirt: 0x8b5a2b, stone: 0x888888 };
-const MONSTER_COLOR = 0x7a1fa2;
-const BLOCK_SIZE = 1;
+const ATTACK_RANGE = 3;
+const REACH = 6; // 挖、放的最遠距離
+const GRAVITY = 20;
+const JUMP_SPEED = 7;
+const WALK_SPEED = 4;
 
 const world = new World();
-const player = { x: 16, y: 11, z: 16 };
+const player = { x: 16.5, y: 11, z: 16.5, vy: 0, onGround: true };
 const keys = new Set();
-let vy = 0;
-let onGround = true;
-let pointer = { x: 0, y: 0, down: false };
+const pointer = { x: innerWidth / 2, y: innerHeight / 2, down: false };
+let selected = "dirt";
+let camYaw = 0;
+let hitFlash = 0;
 
-// 場景與相機
+// ---------- 場景 ----------
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9cc9ff);
-const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+scene.fog = new THREE.Fog(0x9cc9ff, 30, 60);
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "low-power" });
+renderer.setPixelRatio(1); // 舊電腦也要 30 fps，不跟著高解析度螢幕放大
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-const sun = new THREE.DirectionalLight(0xffffff, 0.6);
-sun.position.set(10, 20, 10);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556677, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+sun.position.set(8, 20, 5);
 scene.add(sun);
 
-const geo = new THREE.BoxGeometry(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
-const mats = {
-  dirt: new THREE.MeshLambertMaterial({ color: COLORS.dirt }),
-  stone: new THREE.MeshLambertMaterial({ color: COLORS.stone }),
+// ---------- 像素材質（16×16，用程式畫，之後可換成素材包的圖） ----------
+function pixelTexture(draw) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 16;
+  const g = c.getContext("2d");
+  let seed = 7;
+  const rand = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+  draw(g, rand);
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestFilter;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+function noise(g, rand, base, spread) {
+  for (let y = 0; y < 16; y++) {
+    for (let x = 0; x < 16; x++) {
+      const k = 1 + (rand() - 0.5) * spread;
+      g.fillStyle = `rgb(${base.map((v) => Math.min(255, v * k) | 0).join(",")})`;
+      g.fillRect(x, y, 1, 1);
+    }
+  }
+  g.strokeStyle = "rgba(0,0,0,0.25)";
+  g.strokeRect(0.5, 0.5, 15, 15);
+}
+const tex = {
+  grassTop: pixelTexture((g, r) => noise(g, r, [95, 160, 60], 0.3)),
+  dirt: pixelTexture((g, r) => noise(g, r, [134, 90, 52], 0.3)),
+  grassSide: pixelTexture((g, r) => {
+    noise(g, r, [134, 90, 52], 0.3);
+    g.fillStyle = "rgb(95,160,60)";
+    for (let x = 0; x < 16; x++) g.fillRect(x, 0, 1, 3 + ((r() * 2) | 0));
+  }),
+  stone: pixelTexture((g, r) => noise(g, r, [128, 128, 128], 0.35)),
 };
-const blockMeshes = new Map();
-const dropMeshes = new Map();
-const monsterMeshes = new Map();
-const monsterMat = new THREE.MeshLambertMaterial({ color: MONSTER_COLOR });
-const playerMesh = new THREE.Mesh(
-  new THREE.BoxGeometry(0.6, 1.2, 0.6),
-  new THREE.MeshLambertMaterial({ color: 0xffd166 }),
+const lam = (map) => new THREE.MeshLambertMaterial({ map });
+const MATERIALS = {
+  // 順序：+x, -x, +y(上), -y(下), +z, -z
+  dirt: [lam(tex.grassSide), lam(tex.grassSide), lam(tex.grassTop), lam(tex.dirt), lam(tex.grassSide), lam(tex.grassSide)],
+  stone: lam(tex.stone),
+};
+
+// ---------- 方塊：每種材質一個 InstancedMesh，只在世界變動時重建 ----------
+const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+const blockGroup = new THREE.Group();
+scene.add(blockGroup);
+let drawnVersion = -1;
+
+function rebuildBlocks() {
+  for (const child of blockGroup.children) child.dispose();
+  blockGroup.clear();
+  const byType = { dirt: [], stone: [] };
+  for (const [k, type] of world.blocks) byType[type].push(k.split(",").map(Number));
+  const m = new THREE.Matrix4();
+  for (const type of Object.keys(byType)) {
+    const cells = byType[type];
+    if (!cells.length) continue;
+    const mesh = new THREE.InstancedMesh(boxGeo, MATERIALS[type], cells.length);
+    cells.forEach(([x, y, z], i) => mesh.setMatrixAt(i, m.makeTranslation(x + 0.5, y + 0.5, z + 0.5)));
+    mesh.userData.cells = cells;
+    blockGroup.add(mesh);
+  }
+  drawnVersion = world.version;
+}
+
+// 瞄準框與挖掘裂痕
+const highlight = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
+  new THREE.LineBasicMaterial({ color: 0x000000 }),
 );
+highlight.visible = false;
+scene.add(highlight);
+
+const crackTex = pixelTexture((g, r) => {
+  g.strokeStyle = "rgba(0,0,0,0.9)";
+  g.lineWidth = 1;
+  for (let i = 0; i < 6; i++) {
+    g.beginPath();
+    let x = 8, y = 8;
+    g.moveTo(x, y);
+    for (let s = 0; s < 4; s++) {
+      x += (r() - 0.5) * 8;
+      y += (r() - 0.5) * 8;
+      g.lineTo(x, y);
+    }
+    g.stroke();
+  }
+});
+const crack = new THREE.Mesh(
+  new THREE.BoxGeometry(1.01, 1.01, 1.01),
+  new THREE.MeshBasicMaterial({ map: crackTex, transparent: true, opacity: 0, depthWrite: false }),
+);
+crack.visible = false;
+scene.add(crack);
+
+// ---------- 玩家 ----------
+const playerMesh = new THREE.Group();
+const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.2, 0.4), new THREE.MeshLambertMaterial({ color: 0x3a7bd5 }));
+body.position.y = 0.6;
+const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), new THREE.MeshLambertMaterial({ color: 0xf2c79b }));
+head.position.y = 1.45;
+playerMesh.add(body, head);
 scene.add(playerMesh);
 
-const hud = document.getElementById("hud");
-const raycaster = new THREE.Raycaster();
-
-function ensureBlockMeshes() {
-  // 方塊變動時重畫：先清掉舊的，再依狀態重新加入
-  for (const m of blockMeshes.values()) scene.remove(m);
-  blockMeshes.clear();
-  for (const [k, type] of world.blocks) {
-    const [x, y, z] = k.split(",").map(Number);
-    const mesh = new THREE.Mesh(geo, mats[type]);
-    mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
-    mesh.userData.cell = { x, y, z };
-    scene.add(mesh);
-    blockMeshes.set(k, mesh);
+// ---------- 掉落物與怪獸 ----------
+const dropMeshes = new Map();
+function syncDrops(time) {
+  for (const [d, mesh] of dropMeshes) {
+    if (!world.drops.includes(d)) {
+      scene.remove(mesh);
+      dropMeshes.delete(d);
+    }
   }
-}
-
-function syncDrops() {
-  for (const m of dropMeshes.values()) scene.remove(m);
-  dropMeshes.clear();
   for (const d of world.drops) {
-    const m = new THREE.Mesh(geo, mats[d.type]);
-    m.scale.setScalar(0.35);
-    m.position.set(d.x + 0.5, d.y, d.z + 0.5);
-    scene.add(m);
-    dropMeshes.set(d, m);
+    let mesh = dropMeshes.get(d);
+    if (!mesh) {
+      mesh = new THREE.Mesh(boxGeo, MATERIALS[d.type]);
+      mesh.scale.setScalar(0.3);
+      scene.add(mesh);
+      dropMeshes.set(d, mesh);
+    }
+    // 慢慢轉、上下浮動，但不會浮到空中或穿過地面
+    mesh.position.set(d.x + 0.5, d.y - 0.3 + Math.sin(time * 3) * 0.05, d.z + 0.5);
+    mesh.rotation.y = time * 1.5;
   }
 }
 
-function syncMonsters() {
-  for (const m of monsterMeshes.values()) scene.remove(m);
-  monsterMeshes.clear();
+const monsterMat = new THREE.MeshLambertMaterial({ color: 0x7a1fa2 });
+const monsterHitMat = new THREE.MeshLambertMaterial({ color: 0xff3355 });
+const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const monsterMeshes = new Map();
+function makeMonster() {
+  const g = new THREE.Group();
+  const b = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), monsterMat);
+  b.position.y = 0.45;
+  b.name = "body";
+  const eyeGeo = new THREE.BoxGeometry(0.15, 0.15, 0.05);
+  const e1 = new THREE.Mesh(eyeGeo, eyeMat);
+  const e2 = new THREE.Mesh(eyeGeo, eyeMat);
+  e1.position.set(-0.2, 0.6, 0.46);
+  e2.position.set(0.2, 0.6, 0.46);
+  g.add(b, e1, e2);
+  return g;
+}
+function syncMonsters(time) {
+  for (const [mon, mesh] of monsterMeshes) {
+    if (!world.monsters.includes(mon)) {
+      scene.remove(mesh);
+      monsterMeshes.delete(mon);
+    }
+  }
   for (const mon of world.monsters) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), monsterMat);
-    m.position.set(mon.x + 0.5, mon.y + 0.45, mon.z + 0.5);
-    scene.add(m);
-    monsterMeshes.set(mon, m);
+    let mesh = monsterMeshes.get(mon);
+    if (!mesh) {
+      mesh = makeMonster();
+      scene.add(mesh);
+      monsterMeshes.set(mon, mesh);
+    }
+    const ground = world.groundHeight(mon.x + 0.5, mon.z + 0.5, SIZE) ?? mon.y;
+    mesh.position.set(mon.x + 0.5, ground + Math.abs(Math.sin(time * 6)) * 0.15, mon.z + 0.5);
+    mesh.lookAt(player.x, mesh.position.y, player.z);
+    mesh.getObjectByName("body").material = hitFlash > 0 ? monsterHitMat : monsterMat;
   }
 }
 
-// 滑鼠指到的方塊（用來挖或放）
+// ---------- 瞄準：滑鼠指到哪一格 ----------
+const raycaster = new THREE.Raycaster();
+raycaster.far = 40;
 function pickCell() {
-  const ndc = new THREE.Vector2(
-    (pointer.x / innerWidth) * 2 - 1,
-    -(pointer.y / innerHeight) * 2 + 1,
-  );
+  const ndc = new THREE.Vector2((pointer.x / innerWidth) * 2 - 1, -(pointer.y / innerHeight) * 2 + 1);
   raycaster.setFromCamera(ndc, camera);
-  const hit = raycaster.intersectObjects([...blockMeshes.values()])[0];
+  const hit = raycaster.intersectObjects(blockGroup.children, false)[0];
   if (!hit) return null;
-  const cell = hit.object.userData.cell;
+  const [x, y, z] = hit.object.userData.cells[hit.instanceId];
   const n = hit.face.normal;
+  const dist = Math.hypot(x + 0.5 - player.x, y + 0.5 - (player.y + 1), z + 0.5 - player.z);
+  if (dist > REACH) return null;
   return {
-    hit: cell,
-    adjacent: { x: cell.x + Math.round(n.x), y: cell.y + Math.round(n.y), z: cell.z + Math.round(n.z) },
+    hit: { x, y, z },
+    adjacent: { x: x + Math.round(n.x), y: y + Math.round(n.y), z: z + Math.round(n.z) },
   };
 }
 
-function distToMonster() {
-  let best = null;
-  for (const m of world.monsters) {
-    const d = Math.hypot(m.x - player.x, m.z - player.z);
-    if (best === null || d < best) best = d;
-  }
+function nearestMonsterDist() {
+  let best = Infinity;
+  for (const m of world.monsters) best = Math.min(best, Math.hypot(m.x + 0.5 - player.x, m.z + 0.5 - player.z));
   return best;
 }
 
+// ---------- 輸入 ----------
 addEventListener("keydown", (e) => {
   keys.add(e.code);
-  if (e.code === "Space" && onGround) {
-    vy = 0.3;
-    onGround = false;
-  }
+  if (e.code === "Space") e.preventDefault();
+  if (e.code === "Digit1") selected = "dirt";
+  if (e.code === "Digit2") selected = "stone";
 });
 addEventListener("keyup", (e) => keys.delete(e.code));
-addEventListener("pointermove", (e) => {
+addEventListener("blur", () => {
+  keys.clear();
+  pointer.down = false;
+  world.stopDig();
+});
+
+const canvas = renderer.domElement;
+canvas.addEventListener("pointermove", (e) => {
   pointer.x = e.clientX;
   pointer.y = e.clientY;
 });
-addEventListener("pointerdown", (e) => {
+canvas.addEventListener("pointerdown", (e) => {
   pointer.x = e.clientX;
   pointer.y = e.clientY;
-  const target = pickCell();
   if (e.button === 0) {
-    // 怪獸在身邊就攻擊；否則挖方塊
-    if (world.monsterAlive() && distToMonster() <= 3) {
-      world.attackMonster(player);
+    // 怪獸在身邊：左鍵是攻擊
+    if (world.monsterAlive() && nearestMonsterDist() <= ATTACK_RANGE) {
+      world.attackMonster({ x: player.x - 0.5, z: player.z - 0.5 });
+      hitFlash = 0.15;
       return;
     }
-    if (target) {
-      pointer.down = true;
-      world.startDig(target.hit.x, target.hit.y, target.hit.z);
-    }
+    pointer.down = true;
   } else if (e.button === 2) {
-    if (target) world.placeBlock(target.adjacent.x, target.adjacent.y, target.adjacent.z, "dirt");
+    const t = pickCell();
+    if (!t) return;
+    const { x, y, z } = t.adjacent;
+    const px = Math.floor(player.x);
+    const pz = Math.floor(player.z);
+    const py = Math.floor(player.y + 0.01);
+    // 不能把方塊放在自己身上
+    if (x === px && z === pz && (y === py || y === py + 1)) return;
+    world.placeBlock(x, y, z, selected);
   }
 });
 addEventListener("pointerup", () => {
   pointer.down = false;
   world.stopDig();
 });
-addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ---------- 每一幀 ----------
 function step(dt) {
-  // 移動：WASD 相對於鏡頭方向
-  let dx = 0;
-  let dz = 0;
-  if (keys.has("KeyW")) dz -= 1;
-  if (keys.has("KeyS")) dz += 1;
-  if (keys.has("KeyA")) dx -= 1;
-  if (keys.has("KeyD")) dx += 1;
-  if (dx || dz) {
-    const next = movePlayer(player, dx, dz, 0.08);
-    player.x = next.x;
-    player.z = next.z;
+  // 鏡頭旋轉
+  if (keys.has("KeyQ")) camYaw += 2 * dt;
+  if (keys.has("KeyE")) camYaw -= 2 * dt;
+
+  // 走路：WASD 依鏡頭方向
+  let f = 0;
+  let s = 0;
+  if (keys.has("KeyW")) f += 1;
+  if (keys.has("KeyS")) f -= 1;
+  if (keys.has("KeyD")) s += 1;
+  if (keys.has("KeyA")) s -= 1;
+  if (f || s) {
+    const len = Math.hypot(f, s);
+    const dx = ((-Math.sin(camYaw) * f + Math.cos(camYaw) * s) / len) * WALK_SPEED * dt;
+    const dz = ((-Math.cos(camYaw) * f - Math.sin(camYaw) * s) / len) * WALK_SPEED * dt;
+    // 分開試 x、z，撞牆時還能沿著牆走
+    const nx = movePlayer(player, dx, 0, 1);
+    if (world.canWalkTo(nx.x, player.y, player.z)) player.x = nx.x;
+    const nz = movePlayer(player, 0, dz, 1);
+    if (world.canWalkTo(player.x, player.y, nz.z)) player.z = nz.z;
   }
 
-  // 跳躍與重力（簡單處理，落回第 11 層）
-  vy -= 0.02;
-  player.y += vy;
-  if (player.y <= 11) {
-    player.y = 11;
-    vy = 0;
-    onGround = true;
+  // 跳躍與重力
+  if (keys.has("Space") && player.onGround) {
+    player.vy = JUMP_SPEED;
+    player.onGround = false;
+  }
+  player.vy -= GRAVITY * dt;
+  player.y += player.vy * dt;
+  const ground = world.groundHeight(player.x, player.z, player.y + 0.5) ?? -Infinity;
+  if (player.y < -10) {
+    // 把腳下挖空掉下去了：回到島中央
+    player.x = player.z = 16.5;
+    player.y = (world.groundHeight(16.5, 16.5, SIZE) ?? 11) + 1;
+    player.vy = 0;
+  } else if (player.y <= ground) {
+    player.y = ground;
+    player.vy = 0;
+    player.onGround = true;
+  } else {
+    player.onGround = false;
+  }
+  // 頭頂撞到方塊
+  if (player.vy > 0 && world.getBlock(Math.floor(player.x), Math.floor(player.y + 2), Math.floor(player.z))) {
+    player.vy = 0;
   }
 
-  world.update(dt, player);
-  world.pickupNear(player.x, player.y, player.z);
+  // 挖：按住左鍵持續挖；換到別格就重新開始
+  const target = pickCell();
+  if (pointer.down && target) {
+    const d = world.digging;
+    const same = d && d.x === target.hit.x && d.y === target.hit.y && d.z === target.hit.z;
+    if (!same) world.startDig(target.hit.x, target.hit.y, target.hit.z);
+  } else if (world.digging) {
+    world.stopDig();
+  }
+
+  world.update(dt, { x: player.x - 0.5, z: player.z - 0.5 });
+  world.pickupNear(player.x - 0.5, player.y + 0.5, player.z - 0.5);
+  hitFlash = Math.max(0, hitFlash - dt);
+
+  // 瞄準框
+  highlight.visible = !!target;
+  if (target) highlight.position.set(target.hit.x + 0.5, target.hit.y + 0.5, target.hit.z + 0.5);
+
+  // 裂痕：越挖越明顯
+  if (world.digging) {
+    const { x, y, z, type, progress } = world.digging;
+    crack.visible = true;
+    crack.position.set(x + 0.5, y + 0.5, z + 0.5);
+    crack.material.opacity = Math.min(1, progress / DIG_TIME[type]);
+  } else {
+    crack.visible = false;
+  }
 }
 
+const hud = document.getElementById("hud");
+const slots = document.querySelectorAll("[data-slot]");
+const banner = document.getElementById("banner");
 let last = performance.now();
+let fpsTime = 0;
+let fpsFrames = 0;
+let fps = 0;
+
 function frame(now) {
-  const dt = Math.min((now - last) / 1000, 0.1);
+  const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
+  const time = now / 1000;
   step(dt);
 
-  playerMesh.position.set(player.x + 0.5, player.y + 0.6, player.z + 0.5);
-  camera.position.set(player.x + 0.5, player.y + 6, player.z + 9);
-  camera.lookAt(player.x + 0.5, player.y + 0.5, player.z + 0.5);
+  if (world.version !== drawnVersion) rebuildBlocks();
+  syncDrops(time);
+  syncMonsters(time);
 
-  ensureBlockMeshes();
-  syncDrops();
-  syncMonsters();
+  playerMesh.position.set(player.x, player.y, player.z);
+  playerMesh.rotation.y = camYaw;
+  const camDist = 8;
+  camera.position.set(
+    player.x + Math.sin(camYaw) * camDist,
+    player.y + 5,
+    player.z + Math.cos(camYaw) * camDist,
+  );
+  camera.lookAt(player.x, player.y + 1, player.z);
 
+  // HUD
+  fpsFrames++;
+  fpsTime += dt;
+  if (fpsTime >= 0.5) {
+    fps = Math.round(fpsFrames / fpsTime);
+    fpsFrames = 0;
+    fpsTime = 0;
+  }
   const digPct = world.digging
-    ? Math.round((world.digging.progress / DIG_TIME[world.digging.type]) * 100)
+    ? Math.round(Math.min(1, world.digging.progress / DIG_TIME[world.digging.type]) * 100)
     : 0;
-  hud.textContent =
-    `泥土 ${world.inventory.dirt}　石頭 ${world.inventory.stone}` +
-    (world.monsterAlive() ? "　⚠ 怪獸出現！打敗它才能繼續建造" : "") +
-    (digPct ? `　挖掘 ${digPct}%` : "");
+  hud.textContent = `${fps} fps` + (digPct ? `　挖掘 ${digPct}%` : "");
+  for (const el of slots) {
+    const type = el.dataset.slot;
+    el.querySelector("b").textContent = world.inventory[type];
+    el.classList.toggle("on", type === selected);
+  }
+  if (world.monsterAlive()) {
+    const hp = world.monsters.map((m) => "♥".repeat(m.hp) + "♡".repeat(MONSTER_HP - m.hp)).join("　");
+    banner.textContent = `⚠ 怪獸出現！走近按左鍵打敗它，才能繼續建造　${hp}`;
+    banner.hidden = false;
+  } else {
+    banner.hidden = true;
+  }
 
   renderer.render(scene, camera);
   requestAnimationFrame(frame);

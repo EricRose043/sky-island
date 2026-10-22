@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { World, movePlayer, SIZE, MONSTER_HP } from "../src/world.js";
+import { World, movePlayer, SIZE, MONSTER_HP, SPAWN_MAX } from "../src/world.js";
 
 const center = { x: 16, y: 11, z: 16 };
 
@@ -18,6 +18,27 @@ test("STEP 0: 走路不會走出島的邊界", () => {
   p = { x: 31, y: 11, z: 31 };
   p = movePlayer(p, 1, 1);
   assert.ok(p.x <= SIZE - 1 && p.z <= SIZE - 1);
+});
+
+test("STEP 0: 島的邊緣外沒有地面，走不出去", () => {
+  const w = new World();
+  assert.equal(w.canWalkTo(16.5, 11, 16.5), true);
+  assert.equal(w.canWalkTo(1.5, 11, 1.5), false);
+});
+
+test("STEP 0: 不能穿過方塊", () => {
+  const w = new World();
+  w.inventory.dirt = 1;
+  w.placeBlock(17, 11, 16, "dirt");
+  assert.equal(w.canWalkTo(17.5, 11, 16.5), false);
+});
+
+test("STEP 0: 站的高度是腳下最高的方塊上面", () => {
+  const w = new World();
+  assert.equal(w.groundHeight(16.5, 16.5, 11), 11);
+  w.inventory.dirt = 1;
+  w.placeBlock(16, 11, 16, "dirt");
+  assert.equal(w.groundHeight(16.5, 16.5, 12), 12);
 });
 
 // STEP 1　挖方塊
@@ -120,6 +141,13 @@ test("STEP 5: 怪獸不會出現在玩家腳下（至少 4 格）", () => {
   const w = new World(() => 0.5);
   const m = w.spawnMonster(center);
   assert.ok(Math.hypot(m.x - center.x, m.z - center.z) >= 4);
+});
+
+test("STEP 5: 怪獸還沒被打敗前，不會再出現第二隻", () => {
+  const w = new World(() => 0.5);
+  w.update(w.nextSpawn + 0.1, center);
+  for (let i = 0; i < 10; i++) w.update(SPAWN_MAX + 1, center);
+  assert.equal(w.monsters.length, 1);
 });
 
 // STEP 6　打敗怪獸
